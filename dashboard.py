@@ -16,11 +16,15 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-sys.path.insert(0, str(Path(__file__).parent))
-from imports.import_sales import (
-    process_dataframe, COLUMN_PATTERNS, detect_column,
-    detect_wide_format, get_wide_format_info,
-)
+try:
+    sys.path.insert(0, str(Path(__file__).parent))
+    from imports.import_sales import (
+        process_dataframe, COLUMN_PATTERNS, detect_column,
+        detect_wide_format, get_wide_format_info,
+    )
+    IMPORT_AVAILABLE = True
+except Exception:
+    IMPORT_AVAILABLE = False
 
 # ---------------------------------------------------------------------------
 # Config
@@ -92,8 +96,7 @@ def fmt_money(val: float) -> str:
 # Sidebar
 # ---------------------------------------------------------------------------
 
-st.sidebar.image("https://img.icons8.com/fluency/48/combo-chart.png", width=40)
-st.sidebar.title("Copiloto Ejecutivo")
+st.sidebar.title("📊 Copiloto Ejecutivo")
 st.sidebar.caption("Dashboard de cuentas y ventas")
 
 section = st.sidebar.radio(
@@ -106,7 +109,9 @@ st.sidebar.divider()
 st.sidebar.subheader("📂 Importar ventas")
 uploaded = st.sidebar.file_uploader("Sube un archivo Excel (.xlsx)", type=["xlsx"])
 
-if uploaded:
+if uploaded and not IMPORT_AVAILABLE:
+    st.sidebar.error("Módulo de importación no disponible.")
+elif uploaded:
     try:
         df_raw = pd.read_excel(io.BytesIO(uploaded.read()), dtype=str)
         df_raw.columns = [str(c).strip() for c in df_raw.columns]

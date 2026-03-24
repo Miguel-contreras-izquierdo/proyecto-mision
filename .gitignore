@@ -1,0 +1,15 @@
+# Datos persistentes — NUNCA subir a GitHub
+data/
+
+# Archivos de datos sensibles en imports (pero sí guardar los scripts)
+imports/*.csv
+imports/*.xlsx
+imports/*.xls
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+.venv/
+venv/

@@ -1,0 +1,1 @@
+Este directorio está en .gitignore. Los archivos aquí NO se suben a GitHub.

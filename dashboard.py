@@ -18,7 +18,7 @@ import streamlit as st
 
 try:
     sys.path.insert(0, str(Path(__file__).parent))
-    from imports.import_sales import (
+    from imports.data_processing import (
         process_dataframe, COLUMN_PATTERNS, detect_column,
         detect_wide_format, get_wide_format_info,
     )

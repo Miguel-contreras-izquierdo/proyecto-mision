@@ -1,5 +1,7 @@
-"""Executive account copilot powered by Claude Opus 4.6."""
+"""Executive account copilot powered by Claude with intelligent model routing."""
+from __future__ import annotations
 import json
+from typing import Optional
 import anthropic
 from rich.console import Console
 
@@ -37,12 +39,47 @@ SYSTEM_PROMPT = """Eres el copiloto de productividad ejecutiva de ventas. Tu fun
 Tienes acceso a las herramientas de gestión de cuentas. Los IDs de pendientes se muestran en el dashboard; el ejecutivo puede referirse a ellos por ID o por descripción para completarlos.
 """
 
+# ---------------------------------------------------------------------------
+# Intelligent model routing
+# ---------------------------------------------------------------------------
+
+_SIMPLE_KEYWORDS = {
+    "lista", "listar", "agrega", "añade", "completa", "marca", "ver", "muestra",
+    "cuántos", "nuevo pendiente", "nueva nota", "añadir", "agregar",
+}
+
+_COMPLEX_KEYWORDS = {
+    "estrategia", "tendencia", "tendencias", "riesgo", "oportunidades de crecimiento",
+    "prioriza", "recomienda", "analiza", "portafolio", "proyección", "proyecciones",
+    "crecimiento", "en riesgo", "declive",
+}
+
+
+def _select_model(message: str) -> tuple[str, Optional[dict], int]:
+    """Return (model, thinking_config, max_tokens) based on query complexity."""
+    lower = message.lower()
+    if any(k in lower for k in _COMPLEX_KEYWORDS):
+        return "claude-opus-4-6", {"type": "adaptive"}, 16000
+    if any(k in lower for k in _SIMPLE_KEYWORDS):
+        return "claude-haiku-4-5-20251001", None, 2048
+    return "claude-sonnet-4-6", {"type": "adaptive"}, 8192
+
+
+_MODEL_LABELS = {
+    "claude-opus-4-6": "[bold magenta]opus[/bold magenta]",
+    "claude-sonnet-4-6": "[bold blue]sonnet[/bold blue]",
+    "claude-haiku-4-5-20251001": "[bold cyan]haiku[/bold cyan]",
+}
+
 
 class AccountCopilot:
     def __init__(self):
         self.client = anthropic.Anthropic()
         self.messages: list[dict] = []
         self._session_started = False
+        self._model = "claude-sonnet-4-6"
+        self._thinking: Optional[dict] = {"type": "adaptive"}
+        self._max_tokens = 8192
 
     # ------------------------------------------------------------------
     # Public API
@@ -50,6 +87,9 @@ class AccountCopilot:
 
     def chat(self, user_input: str) -> str:
         """Send a user message and return the assistant's final text response."""
+        self._model, self._thinking, self._max_tokens = _select_model(user_input)
+        label = _MODEL_LABELS[self._model]
+        console.print(f"  [dim]modelo: {label}[/dim]")
         self.messages.append({"role": "user", "content": user_input})
         return self._run_loop()
 
@@ -68,14 +108,17 @@ class AccountCopilot:
             collected_text = ""
             text_started = False
 
-            with self.client.messages.stream(
-                model="claude-opus-4-6",
-                max_tokens=8192,
-                thinking={"type": "adaptive"},
+            stream_kwargs: dict = dict(
+                model=self._model,
+                max_tokens=self._max_tokens,
                 system=SYSTEM_PROMPT,
                 tools=TOOLS,
                 messages=self.messages,
-            ) as stream:
+            )
+            if self._thinking:
+                stream_kwargs["thinking"] = self._thinking
+
+            with self.client.messages.stream(**stream_kwargs) as stream:
                 for event in stream:
                     if event.type == "content_block_start":
                         if event.content_block.type == "text" and not text_started:

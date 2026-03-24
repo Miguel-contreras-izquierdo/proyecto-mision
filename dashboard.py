@@ -4,7 +4,9 @@ Ejecutar: streamlit run dashboard.py
 """
 from __future__ import annotations
 
+import io
 import json
+import sys
 from collections import defaultdict
 from datetime import date, datetime
 from pathlib import Path
@@ -13,6 +15,9 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+
+sys.path.insert(0, str(Path(__file__).parent))
+from imports.import_sales import process_dataframe, COLUMN_PATTERNS, detect_column
 
 # ---------------------------------------------------------------------------
 # Config
@@ -92,6 +97,59 @@ section = st.sidebar.radio(
     "Sección",
     ["📊 Resumen Ejecutivo", "📈 Ventas", "🏢 Cuentas", "⏰ Pendientes", "💡 Oportunidades"],
 )
+st.sidebar.divider()
+
+# ---- Importar archivo de ventas ----
+st.sidebar.subheader("📂 Importar ventas")
+uploaded = st.sidebar.file_uploader("Sube un archivo Excel (.xlsx)", type=["xlsx"])
+
+if uploaded:
+    try:
+        df_raw = pd.read_excel(io.BytesIO(uploaded.read()), dtype=str)
+        cols = list(df_raw.columns)
+
+        # Show detected mapping for user review
+        auto_mapping = {f: detect_column(cols, f) for f in COLUMN_PATTERNS}
+        with st.sidebar.expander("Columnas detectadas", expanded=True):
+            for field, col in auto_mapping.items():
+                required = field in ("account", "period", "amount")
+                icon = "🔴" if (required and not col) else ("✅" if col else "⬜")
+                st.write(f"{icon} **{field}** → {col or '—'}")
+
+            st.caption("Corrige el mapeo si es necesario:")
+            custom_mapping = {}
+            for field in COLUMN_PATTERNS:
+                options = ["— ninguna —"] + cols
+                default_idx = cols.index(auto_mapping[field]) + 1 if auto_mapping[field] in cols else 0
+                selected = st.selectbox(field, options, index=default_idx, key=f"map_{field}")
+                custom_mapping[field] = selected if selected != "— ninguna —" else None
+
+        if st.sidebar.button("✅ Importar y actualizar dashboard"):
+            # Apply custom mapping by renaming columns to field names
+            rename = {v: k for k, v in custom_mapping.items() if v}
+            df_mapped = df_raw.rename(columns=rename)
+            # Restore original names for unmapped columns so process_dataframe can work
+            for field, orig_col in custom_mapping.items():
+                if orig_col and field not in df_mapped.columns:
+                    df_mapped[field] = df_raw[orig_col]
+
+            try:
+                summary = process_dataframe(df_mapped, uploaded.name)
+                periods = summary["periods"]
+                st.sidebar.success(
+                    f"✓ {summary['records']:,} registros importados\n\n"
+                    f"📅 {periods[0]} → {periods[-1]}\n\n"
+                    f"🏢 {summary['unique_accounts']} cuentas\n\n"
+                    f"💰 ${summary['total_amount']:,.0f}"
+                )
+                st.cache_data.clear()
+                st.rerun()
+            except ValueError as e:
+                st.sidebar.error(str(e))
+
+    except Exception as e:
+        st.sidebar.error(f"Error leyendo el archivo: {e}")
+
 st.sidebar.divider()
 st.sidebar.caption(f"Datos al {datetime.now().strftime('%d/%m/%Y %H:%M')}")
 if st.sidebar.button("🔄 Actualizar datos"):

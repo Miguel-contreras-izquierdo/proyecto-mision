@@ -126,26 +126,19 @@ def normalize_period(val) -> str:
         return str(val).strip()
 
 
-def import_file(filepath: str) -> None:
-    path = Path(filepath)
-    if not path.exists():
-        console.print(f"[red]Archivo no encontrado: {path}[/red]")
-        sys.exit(1)
-
-    console.print(f"\n[bold green]Leyendo:[/bold green] {path.name}")
-    df = pd.read_excel(path, dtype=str)
+def process_dataframe(df: pd.DataFrame, filename: str) -> dict:
+    """
+    Process an already-loaded DataFrame and save records to sales_history.json.
+    Returns a summary dict with keys: records, errors, unique_accounts, periods, total_amount.
+    Raises ValueError if required columns are missing or no valid records found.
+    """
     df.columns = [str(c).strip() for c in df.columns]
+    mapping = {field: detect_column(list(df.columns), field) for field in COLUMN_PATTERNS}
 
-    show_file_preview(df)
-    mapping = build_mapping(df)
-
-    # Validate required fields
     missing = [f for f in ("account", "period", "amount") if not mapping.get(f)]
     if missing:
-        console.print(f"[red]Faltan columnas requeridas: {missing}. Importación cancelada.[/red]")
-        sys.exit(1)
+        raise ValueError(f"Faltan columnas requeridas: {missing}")
 
-    # Build records
     records = []
     errors = 0
     for _, row in df.iterrows():
@@ -157,14 +150,14 @@ def import_file(filepath: str) -> None:
             units = int(float(str(units_raw).replace(",", "").strip())) if str(units_raw) not in ("", "nan") else 0
 
             record = {
-                "account_name":  str(row.get(mapping["account"], "")).strip(),
-                "period":        normalize_period(row.get(mapping["period"])),
-                "product":       str(row.get(mapping.get("product", ""), "")).strip() if mapping.get("product") else "",
-                "sku":           str(row.get(mapping.get("sku", ""), "")).strip() if mapping.get("sku") else "",
-                "brand":         str(row.get(mapping.get("brand", ""), "")).strip() if mapping.get("brand") else "",
-                "units":         units,
-                "amount":        amount,
-                "rep":           str(row.get(mapping.get("rep", ""), "")).strip() if mapping.get("rep") else "",
+                "account_name": str(row.get(mapping["account"], "")).strip(),
+                "period":       normalize_period(row.get(mapping["period"])),
+                "product":      str(row.get(mapping.get("product", ""), "")).strip() if mapping.get("product") else "",
+                "sku":          str(row.get(mapping.get("sku", ""), "")).strip() if mapping.get("sku") else "",
+                "brand":        str(row.get(mapping.get("brand", ""), "")).strip() if mapping.get("brand") else "",
+                "units":        units,
+                "amount":       amount,
+                "rep":          str(row.get(mapping.get("rep", ""), "")).strip() if mapping.get("rep") else "",
             }
             if record["account_name"] and record["account_name"] != "nan":
                 records.append(record)
@@ -172,34 +165,62 @@ def import_file(filepath: str) -> None:
             errors += 1
 
     if not records:
-        console.print("[red]No se encontraron registros válidos.[/red]")
-        sys.exit(1)
+        raise ValueError("No se encontraron registros válidos en el archivo.")
 
-    # Save
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     existing = []
     if SALES_FILE.exists():
         existing = json.loads(SALES_FILE.read_text(encoding="utf-8"))
 
-    # Remove previous records from this file, then add new ones
-    existing = [r for r in existing if r.get("_source") != path.name]
+    existing = [r for r in existing if r.get("_source") != filename]
     for r in records:
-        r["_source"] = path.name
+        r["_source"] = filename
     existing.extend(records)
     SALES_FILE.write_text(json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8")
 
-    # Summary
     df_rec = pd.DataFrame(records)
-    total_amount = df_rec["amount"].sum()
-    unique_accounts = df_rec["account_name"].nunique()
     periods = sorted(df_rec["period"].unique().tolist())
+    return {
+        "records": len(records),
+        "errors": errors,
+        "unique_accounts": df_rec["account_name"].nunique(),
+        "periods": periods,
+        "total_amount": df_rec["amount"].sum(),
+        "mapping": mapping,
+    }
 
+
+def import_file(filepath: str) -> None:
+    path = Path(filepath)
+    if not path.exists():
+        console.print(f"[red]Archivo no encontrado: {path}[/red]")
+        sys.exit(1)
+
+    console.print(f"\n[bold green]Leyendo:[/bold green] {path.name}")
+    df = pd.read_excel(path, dtype=str)
+    show_file_preview(df)
+    mapping = build_mapping(df)
+
+    missing = [f for f in ("account", "period", "amount") if not mapping.get(f)]
+    if missing:
+        console.print(f"[red]Faltan columnas requeridas: {missing}. Importación cancelada.[/red]")
+        sys.exit(1)
+
+    # Apply confirmed mapping and reuse process_dataframe
+    df.columns = [str(c).strip() for c in df.columns]
+    try:
+        summary = process_dataframe(df, path.name)
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        sys.exit(1)
+
+    periods = summary["periods"]
     console.print(f"\n[bold green]✓ Importación exitosa[/bold green]")
-    console.print(f"  Registros importados : [bold]{len(records):,}[/bold]")
-    console.print(f"  Errores omitidos     : {errors}")
-    console.print(f"  Cuentas únicas       : [bold]{unique_accounts}[/bold]")
+    console.print(f"  Registros importados : [bold]{summary['records']:,}[/bold]")
+    console.print(f"  Errores omitidos     : {summary['errors']}")
+    console.print(f"  Cuentas únicas       : [bold]{summary['unique_accounts']}[/bold]")
     console.print(f"  Período              : {periods[0]} → {periods[-1]}")
-    console.print(f"  Venta total          : [bold]${total_amount:,.0f}[/bold]")
+    console.print(f"  Venta total          : [bold]${summary['total_amount']:,.0f}[/bold]")
     console.print(f"\n  Guardado en: [dim]{SALES_FILE}[/dim]")
     console.print("\n[dim]Ya puedes abrir el copiloto (python3 main.py) y pedir análisis de ventas.[/dim]\n")
 

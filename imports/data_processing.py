@@ -21,8 +21,8 @@ SALES_FILE = DATA_DIR / "sales_history.json"
 COLUMN_PATTERNS: dict[str, list[str]] = {
     "account": [
         "cliente", "cuenta", "account", "farmacia", "nombre cliente",
-        "razon social", "razón social", "distribuidor", "cadena", "canal",
-        "cliente cadena",
+        "razon social", "razón social", "cadena", "canal", "cliente cadena",
+        "distribuidor",
     ],
     "period": [
         "mes", "periodo", "período", "fecha", "month", "date", "año mes",
@@ -35,7 +35,7 @@ COLUMN_PATTERNS: dict[str, list[str]] = {
     ],
     "sku": [
         "sku", "clave", "codigo", "código", "code", "clave producto",
-        "ean", "codigo ean", "código ean", "gtin",
+        "ean", "codigo ean", "código ean", "gtin", "sap",
     ],
     "brand": [
         "marca", "laboratorio", "lab", "brand", "fabricante", "linea", "línea",

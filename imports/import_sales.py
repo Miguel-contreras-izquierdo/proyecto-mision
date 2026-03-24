@@ -6,6 +6,7 @@ Uso: python3 imports/import_sales.py imports/1.xlsx
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -23,7 +24,8 @@ console = Console()
 COLUMN_PATTERNS = {
     "account": [
         "cliente", "cuenta", "account", "farmacia", "nombre cliente",
-        "razon social", "razón social", "distribuidor",
+        "razon social", "razón social", "distribuidor", "cadena", "canal",
+        "cliente cadena",
     ],
     "period": [
         "mes", "periodo", "período", "fecha", "month", "date", "año mes",
@@ -31,9 +33,13 @@ COLUMN_PATTERNS = {
     ],
     "product": [
         "producto", "descripcion", "descripción", "product", "articulo",
-        "artículo", "nombre producto", "desc producto",
+        "artículo", "nombre producto", "desc producto", "descripcion sku",
+        "nombre sku",
     ],
-    "sku": ["sku", "clave", "codigo", "código", "code", "clave producto"],
+    "sku": [
+        "sku", "clave", "codigo", "código", "code", "clave producto",
+        "ean", "codigo ean", "código ean", "gtin",
+    ],
     "brand": [
         "marca", "laboratorio", "lab", "brand", "fabricante", "linea", "línea",
     ],
@@ -50,6 +56,64 @@ COLUMN_PATTERNS = {
         "promotor", "agente",
     ],
 }
+
+# ---------------------------------------------------------------------------
+# Wide-format detection and pivot
+# ---------------------------------------------------------------------------
+
+_MONTH_NAMES_ES = [
+    "ene", "feb", "mar", "abr", "may", "jun",
+    "jul", "ago", "sep", "oct", "nov", "dic",
+    "enero", "febrero", "marzo", "abril", "mayo", "junio",
+    "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
+]
+
+_MES_MAP = {
+    "ene": "01", "feb": "02", "mar": "03", "abr": "04",
+    "may": "05", "jun": "06", "jul": "07", "ago": "08",
+    "sep": "09", "oct": "10", "nov": "11", "dic": "12",
+}
+
+
+def _is_period_col(col: str) -> bool:
+    """Return True if the column name looks like a time period or YTD/MAT aggregate."""
+    c = col.lower().strip()
+    if c in ("ytd", "mat"):
+        return True
+    if re.match(r"\d{4}-\d{1,2}$", c):           # 2024-01
+        return True
+    if re.match(r"\d{1,2}[-/]\d{2,4}$", c):       # 01-24 or 01/2024
+        return True
+    if any(c.startswith(m) for m in _MONTH_NAMES_ES):  # ene-24, enero 2024
+        return True
+    return False
+
+
+def detect_wide_format(df: pd.DataFrame) -> bool:
+    """Return True if the DataFrame looks like a wide (pivoted) sales file."""
+    period_cols = [c for c in df.columns if _is_period_col(str(c))]
+    return len(period_cols) >= 3
+
+
+def get_wide_format_info(df: pd.DataFrame) -> dict:
+    """Return metadata about the wide-format columns detected."""
+    period_cols = [c for c in df.columns if _is_period_col(str(c))]
+    agg_cols = [c for c in period_cols if str(c).lower().strip() in ("ytd", "mat")]
+    month_cols = [c for c in period_cols if str(c).lower().strip() not in ("ytd", "mat")]
+    id_cols = [c for c in df.columns if not _is_period_col(str(c))]
+    return {"id_cols": id_cols, "month_cols": month_cols, "agg_cols": agg_cols}
+
+
+def melt_wide_format(df: pd.DataFrame) -> pd.DataFrame:
+    """Unpivot a wide-format DataFrame (periods as columns) into long format."""
+    info = get_wide_format_info(df)
+    melted = df.melt(
+        id_vars=info["id_cols"],
+        value_vars=info["month_cols"],
+        var_name="period",
+        value_name="amount",
+    )
+    return melted
 
 
 def detect_column(df_columns: list[str], field: str) -> str | None:
@@ -116,24 +180,52 @@ def build_mapping(df: pd.DataFrame) -> dict[str, str]:
 
 
 def normalize_period(val) -> str:
-    """Normalize period to YYYY-MM format."""
+    """Normalize period to YYYY-MM format, handling Spanish month names."""
     if pd.isna(val):
         return "desconocido"
+    s = str(val).strip()
+    sl = s.lower()
+
+    # Spanish month pattern: ene-24, feb-2024, enero 2024, mar/24
+    m = re.match(r"([a-záéíóú]+)[-/\s](\d{2,4})$", sl)
+    if m:
+        mes_raw, year_raw = m.group(1)[:3], m.group(2)
+        year = f"20{year_raw}" if len(year_raw) == 2 else year_raw
+        num = _MES_MAP.get(mes_raw)
+        if num:
+            return f"{year}-{num}"
+
+    # Fallback: let pandas parse it
     try:
-        ts = pd.to_datetime(val)
+        ts = pd.to_datetime(s)
         return ts.strftime("%Y-%m")
     except Exception:
-        return str(val).strip()
+        return s
 
 
 def process_dataframe(df: pd.DataFrame, filename: str) -> dict:
     """
     Process an already-loaded DataFrame and save records to sales_history.json.
-    Returns a summary dict with keys: records, errors, unique_accounts, periods, total_amount.
+    Automatically detects wide format (EAN/cadena/SKU + period columns) and pivots it.
+    Returns a summary dict with keys: records, errors, unique_accounts, periods, total_amount, wide_format.
     Raises ValueError if required columns are missing or no valid records found.
     """
     df.columns = [str(c).strip() for c in df.columns]
+
+    wide = detect_wide_format(df)
+    if wide:
+        df = melt_wide_format(df)
+        # After melt, 'period' and 'amount' columns are named exactly that
+        # so detect_column will find them; id_cols keep their original names
+
     mapping = {field: detect_column(list(df.columns), field) for field in COLUMN_PATTERNS}
+
+    # In wide format the melted columns are already named 'period' and 'amount'
+    if wide:
+        if not mapping.get("period"):
+            mapping["period"] = "period"
+        if not mapping.get("amount"):
+            mapping["amount"] = "amount"
 
     missing = [f for f in ("account", "period", "amount") if not mapping.get(f)]
     if missing:
@@ -187,6 +279,7 @@ def process_dataframe(df: pd.DataFrame, filename: str) -> dict:
         "periods": periods,
         "total_amount": df_rec["amount"].sum(),
         "mapping": mapping,
+        "wide_format": wide,
     }
 
 

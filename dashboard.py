@@ -17,7 +17,10 @@ import plotly.graph_objects as go
 import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).parent))
-from imports.import_sales import process_dataframe, COLUMN_PATTERNS, detect_column
+from imports.import_sales import (
+    process_dataframe, COLUMN_PATTERNS, detect_column,
+    detect_wide_format, get_wide_format_info,
+)
 
 # ---------------------------------------------------------------------------
 # Config
@@ -106,38 +109,62 @@ uploaded = st.sidebar.file_uploader("Sube un archivo Excel (.xlsx)", type=["xlsx
 if uploaded:
     try:
         df_raw = pd.read_excel(io.BytesIO(uploaded.read()), dtype=str)
+        df_raw.columns = [str(c).strip() for c in df_raw.columns]
         cols = list(df_raw.columns)
 
-        # Show detected mapping for user review
-        auto_mapping = {f: detect_column(cols, f) for f in COLUMN_PATTERNS}
-        with st.sidebar.expander("Columnas detectadas", expanded=True):
-            for field, col in auto_mapping.items():
-                required = field in ("account", "period", "amount")
-                icon = "🔴" if (required and not col) else ("✅" if col else "⬜")
-                st.write(f"{icon} **{field}** → {col or '—'}")
-
-            st.caption("Corrige el mapeo si es necesario:")
-            custom_mapping = {}
-            for field in COLUMN_PATTERNS:
-                options = ["— ninguna —"] + cols
-                default_idx = cols.index(auto_mapping[field]) + 1 if auto_mapping[field] in cols else 0
-                selected = st.selectbox(field, options, index=default_idx, key=f"map_{field}")
-                custom_mapping[field] = selected if selected != "— ninguna —" else None
+        is_wide = detect_wide_format(df_raw)
+        if is_wide:
+            info = get_wide_format_info(df_raw)
+            st.sidebar.info(
+                f"📊 **Formato ancho detectado**\n\n"
+                f"- {len(info['id_cols'])} columnas fijas: {', '.join(info['id_cols'])}\n"
+                f"- {len(info['month_cols'])} periodos mensuales\n"
+                f"- {len(info['agg_cols'])} columnas omitidas (YTD/MAT): "
+                + (', '.join(info['agg_cols']) if info['agg_cols'] else '—')
+            )
+            with st.sidebar.expander("Columnas de periodo detectadas"):
+                st.write(", ".join(info['month_cols']))
+            with st.sidebar.expander("Columnas fijas — verificar mapeo"):
+                auto_mapping = {f: detect_column(info['id_cols'], f) for f in ("account", "product", "sku", "brand", "rep")}
+                custom_mapping = {}
+                for field in ("account", "product", "sku", "brand", "rep"):
+                    required = field == "account"
+                    icon = "🔴" if (required and not auto_mapping[field]) else ("✅" if auto_mapping[field] else "⬜")
+                    options = ["— ninguna —"] + info['id_cols']
+                    default_idx = info['id_cols'].index(auto_mapping[field]) + 1 if auto_mapping[field] in info['id_cols'] else 0
+                    selected = st.selectbox(f"{icon} {field}", options, index=default_idx, key=f"map_{field}")
+                    custom_mapping[field] = selected if selected != "— ninguna —" else None
+        else:
+            st.sidebar.info("📋 **Formato largo detectado**")
+            auto_mapping = {f: detect_column(cols, f) for f in COLUMN_PATTERNS}
+            with st.sidebar.expander("Columnas detectadas", expanded=True):
+                for field, col in auto_mapping.items():
+                    required = field in ("account", "period", "amount")
+                    icon = "🔴" if (required and not col) else ("✅" if col else "⬜")
+                    st.write(f"{icon} **{field}** → {col or '—'}")
+                st.caption("Corrige el mapeo si es necesario:")
+                custom_mapping = {}
+                for field in COLUMN_PATTERNS:
+                    options = ["— ninguna —"] + cols
+                    default_idx = cols.index(auto_mapping[field]) + 1 if auto_mapping[field] in cols else 0
+                    selected = st.selectbox(field, options, index=default_idx, key=f"map_{field}")
+                    custom_mapping[field] = selected if selected != "— ninguna —" else None
 
         if st.sidebar.button("✅ Importar y actualizar dashboard"):
-            # Apply custom mapping by renaming columns to field names
-            rename = {v: k for k, v in custom_mapping.items() if v}
-            df_mapped = df_raw.rename(columns=rename)
-            # Restore original names for unmapped columns so process_dataframe can work
-            for field, orig_col in custom_mapping.items():
-                if orig_col and field not in df_mapped.columns:
-                    df_mapped[field] = df_raw[orig_col]
+            if is_wide:
+                # Apply id column remapping before passing to process_dataframe
+                rename = {v: k for k, v in custom_mapping.items() if v}
+                df_to_import = df_raw.rename(columns=rename)
+            else:
+                rename = {v: k for k, v in custom_mapping.items() if v}
+                df_to_import = df_raw.rename(columns=rename)
 
             try:
-                summary = process_dataframe(df_mapped, uploaded.name)
+                summary = process_dataframe(df_to_import, uploaded.name)
                 periods = summary["periods"]
+                fmt = "ancho" if summary.get("wide_format") else "largo"
                 st.sidebar.success(
-                    f"✓ {summary['records']:,} registros importados\n\n"
+                    f"✓ {summary['records']:,} registros importados ({fmt})\n\n"
                     f"📅 {periods[0]} → {periods[-1]}\n\n"
                     f"🏢 {summary['unique_accounts']} cuentas\n\n"
                     f"💰 ${summary['total_amount']:,.0f}"
